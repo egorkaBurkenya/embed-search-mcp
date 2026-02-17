@@ -151,19 +151,25 @@ async def index_project(
         # First batch creates/replaces the project, subsequent batches append
         batch_size = 10
         total_chunks = 0
+        total_batches = (len(files) + batch_size - 1) // batch_size
+        log.info(f"Starting indexing: {len(files)} files in {total_batches} batches")
         async with _client() as client:
             for i in range(0, len(files), batch_size):
                 batch = files[i : i + batch_size]
                 batch_num = i // batch_size + 1
-                total_batches = (len(files) + batch_size - 1) // batch_size
-                log.info(f"Indexing batch {batch_num}/{total_batches} ({len(batch)} files)")
+                pct = int(batch_num / total_batches * 100)
+                batch_files = ", ".join(f["path"] for f in batch[:3])
+                if len(batch) > 3:
+                    batch_files += f" (+{len(batch) - 3} more)"
+                log.info(f"[{pct}%] Batch {batch_num}/{total_batches}: {batch_files}")
                 append = i > 0  # first batch replaces, rest append
                 r = await client.put(f"/projects/{project}/index-files", json={"files": batch}, params={"append": str(append).lower()})
                 r.raise_for_status()
                 data = r.json()
                 total_chunks = data.get("total_chunks", total_chunks + data.get("chunks_count", 0))
+                log.info(f"[{pct}%] Batch {batch_num} done — {data.get('chunks_count', 0)} chunks, total: {total_chunks}")
 
-        return f"Indexed project '{project}': {len(files)} files, {total_chunks} chunks created."
+        return f"✅ Indexed project '{project}': {len(files)} files, {total_chunks} chunks. ({total_batches} batches, skipped: {skipped})"
     except httpx.ConnectError:
         return f"Error: Cannot connect to embed-server at {API_URL}. Is it running?"
     except httpx.HTTPStatusError as e:
