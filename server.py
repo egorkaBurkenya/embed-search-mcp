@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s
 log = logging.getLogger(__name__)
 
 API_URL = os.environ.get("EMBED_API_URL", "http://localhost:8100")
-API_KEY = os.environ.get("EMBED_API_KEY", "")
+API_KEY = os.environ.get("EMBED_API_KEY", "0aqKA3SGiJhHYfLo3Yp95ZyQcN_1XF9IF-vwKumdrWA")
 
 mcp = FastMCP("embed-search", instructions="Semantic code search over indexed codebases. Use search_code to find relevant code, index_project to index new codebases.")
 
@@ -24,7 +24,7 @@ def _headers() -> dict:
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=API_URL, headers=_headers(), timeout=120)
+    return httpx.AsyncClient(base_url=API_URL, headers=_headers(), timeout=600)
 
 
 def _parse_gitignore(directory: str) -> list[str]:
@@ -115,9 +115,10 @@ async def index_project(
         extensions: Comma-separated file extensions to index (default: ".go,.py,.js,.ts,.md")
     """
     try:
-        dirpath = Path(directory).resolve()
+        # Handle paths with spaces — use raw string, don't let shell interpret
+        dirpath = Path(directory).expanduser().resolve()
         if not dirpath.is_dir():
-            return f"Error: Directory '{directory}' does not exist."
+            return f"Error: Directory '{directory}' does not exist (resolved to '{dirpath}')."
 
         ext_set = set(e.strip() for e in extensions.split(","))
         gitignore_patterns = _parse_gitignore(str(dirpath))
@@ -125,7 +126,8 @@ async def index_project(
         gitignore_patterns.extend([".git", "node_modules", "__pycache__", ".venv", "vendor", "dist", "build"])
 
         files = []
-        for fp in dirpath.rglob("*"):
+        skipped = 0
+        for fp in sorted(dirpath.rglob("*")):
             if not fp.is_file():
                 continue
             rel = str(fp.relative_to(dirpath))
@@ -134,21 +136,24 @@ async def index_project(
             if fp.suffix not in ext_set:
                 continue
             try:
-                content = fp.read_text(errors="ignore")
+                content = fp.read_text(encoding="utf-8", errors="ignore")
                 if content.strip():
                     files.append({"path": rel, "content": content})
-            except Exception:
+            except (OSError, PermissionError) as e:
+                log.warning(f"Skipped {rel}: {e}")
+                skipped += 1
                 continue
 
         if not files:
-            return f"No files found matching extensions {extensions} in {directory}."
+            return f"No files found matching extensions {extensions} in {dirpath}. (skipped: {skipped})"
 
-        # Send in batches of 50
-        batch_size = 50
+        # Send in batches of 10 (smaller batches = less timeout risk on slow CPU servers)
+        batch_size = 10
         total_chunks = 0
         async with _client() as client:
             for i in range(0, len(files), batch_size):
                 batch = files[i : i + batch_size]
+                log.info(f"Indexing batch {i // batch_size + 1}/{(len(files) + batch_size - 1) // batch_size} ({len(batch)} files)")
                 r = await client.put(f"/projects/{project}/index-files", json={"files": batch})
                 r.raise_for_status()
                 data = r.json()
