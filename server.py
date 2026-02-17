@@ -148,16 +148,20 @@ async def index_project(
             return f"No files found matching extensions {extensions} in {dirpath}. (skipped: {skipped})"
 
         # Send in batches of 10 (smaller batches = less timeout risk on slow CPU servers)
+        # First batch creates/replaces the project, subsequent batches append
         batch_size = 10
         total_chunks = 0
         async with _client() as client:
             for i in range(0, len(files), batch_size):
                 batch = files[i : i + batch_size]
-                log.info(f"Indexing batch {i // batch_size + 1}/{(len(files) + batch_size - 1) // batch_size} ({len(batch)} files)")
-                r = await client.put(f"/projects/{project}/index-files", json={"files": batch})
+                batch_num = i // batch_size + 1
+                total_batches = (len(files) + batch_size - 1) // batch_size
+                log.info(f"Indexing batch {batch_num}/{total_batches} ({len(batch)} files)")
+                append = i > 0  # first batch replaces, rest append
+                r = await client.put(f"/projects/{project}/index-files", json={"files": batch}, params={"append": str(append).lower()})
                 r.raise_for_status()
                 data = r.json()
-                total_chunks += data.get("chunks_count", data.get("total_chunks", 0))
+                total_chunks = data.get("total_chunks", total_chunks + data.get("chunks_count", 0))
 
         return f"Indexed project '{project}': {len(files)} files, {total_chunks} chunks created."
     except httpx.ConnectError:
